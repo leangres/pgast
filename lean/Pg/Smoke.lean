@@ -16,6 +16,7 @@ See: ~/Documents/rfcs/narrative/pgast-extraction-*.md
 import Pg.Ty
 import Pg.RegexAst
 import Pg.Ast
+import Pg.Stmt
 import Pg.Pretty
 import Pg.Catalog.Oid
 import Pg.Catalog.Tables
@@ -64,6 +65,11 @@ def touch : Unit :=
         (Pg.Ast.Identifier.qualified "graph" "has_permission") [])
   -- Pg.Ast.BodyStmt: touch a simple case.
   let _ : Pg.Ast.BodyStmt := Pg.Ast.BodyStmt.exitLoop
+  -- Pg.Stmt: touch the top-level Stmt inductive via a
+  -- minimal createSchema variant.
+  let _ : Pg.Stmt.Stmt := Pg.Stmt.Stmt.createSchema
+    { name := Pg.Ast.Identifier.unqualified "graph",
+      ifNotExists := false }
   -- Pg.Pretty: real content landed Phase 1b. Render the
   -- Pg.Ast.Expr value above to a SQL fragment to exercise the
   -- printExpr ↔ printExprExt mutual dispatch.

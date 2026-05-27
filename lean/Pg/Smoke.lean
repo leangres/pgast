@@ -55,13 +55,19 @@ def touch : Unit :=
   -- Pg.Catalog.Generated: real content landed Phase 1b.
   -- Touch bootstrapSuperuserid (PG 17.6 reserved oid 10).
   let _ : Pg.Catalog.PgAuthid := Pg.Catalog.Generated.bootstrapSuperuserid
-  -- Still-stubbed modules:
-  let _ := Pg.Ast.placeholder
+  -- Pg.Ast: real content landed Phase 1b — the Pattern A factor.
+  -- Touch a value constructed via the ext hatch to exercise the
+  -- mutual-recursion shape end-to-end.
+  let _ : Pg.Ast.Expr :=
+    Polyglot.Sql.Ast.Expr.ext
+      (Pg.Ast.ExprExt.callQualified
+        (Pg.Ast.Identifier.qualified "graph" "has_permission") [])
+  -- Pg.Ast.BodyStmt: touch a simple case.
+  let _ : Pg.Ast.BodyStmt := Pg.Ast.BodyStmt.exitLoop
+  -- Pg.Pretty: still stubbed.
   let _ := Pg.Pretty.placeholder
   -- Pg.Catalog (umbrella): re-exports the 7 sub-modules; no
-  -- placeholder to touch. The fact that the file above the
-  -- `import Pg.Catalog` line in this file's import block compiles
-  -- proves the umbrella elaborates.
+  -- placeholder to touch.
   ()
 
 end Pg.Smoke

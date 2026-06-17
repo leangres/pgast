@@ -12,9 +12,10 @@ instead of a 12-line `lean_test` invocation.
 
 load("@rules_lean//lean:lean.bzl", "lean_test")
 
-# Common srcs prefix for Pg/AstX*Test.lean files.
+# Common srcs prefix for Pg/AstX*Test.lean files. The generic SQL kernel
+# (`Polyglot.Sql.Ast`) arrives prebuilt via the `@rules_lang//lean:atlas`
+# olean dep (see `_PG_AST_SMOKE_DEPS`), not recompiled from source.
 _PG_AST_SMOKE_SRCS = [
-    "@polyglot_ast//lean:Polyglot/Sql/Ast.lean",
     "Pg/Ty.lean",
     "Pg/RegexAst.lean",
     "Pg/Catalog/Oid.lean",
@@ -26,6 +27,9 @@ _PG_AST_SMOKE_SRCS = [
     "Pg/Pretty.lean",
     "Pg/ProceduralSurface.lean",
 ]
+
+# Prebuilt generic SQL kernel olean (`Polyglot.Sql.Ast`).
+_PG_AST_SMOKE_DEPS = ["@rules_lang//lean:atlas"]
 
 def pg_ast_smoke_test(name, entry):
     """Generates a lean_test target for a Pg/AstX*Test.lean file.
@@ -39,6 +43,7 @@ def pg_ast_smoke_test(name, entry):
     lean_test(
         name = name,
         srcs = _PG_AST_SMOKE_SRCS + [entry],
+        deps = _PG_AST_SMOKE_DEPS,
         entry = entry,
         visibility = ["//visibility:public"],
     )

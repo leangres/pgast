@@ -30,7 +30,10 @@ import Pg.RegexAst
 
 namespace Pg.Pretty
 
-open Polyglot.Sql.Ast Pg.Ast Pg.Stmt
+-- The rules_lang 0.3.0 atlas added a generic `Polyglot.Sql.Ast.Stmt`; this is
+-- the PG pretty-printer, so hide it and use `Pg.Stmt.Stmt`.
+open Polyglot.Sql.Ast hiding Stmt
+open Pg.Ast Pg.Stmt
 open Pg.RegexAst
 
 /-- Render a typed literal as its postgres-canonical surface

@@ -1071,6 +1071,47 @@ def printCreateSchema (s : CreateSchemaStmt) : String :=
   bannerStr ++
   "CREATE SCHEMA " ++ ifne ++ s.name.toSql ++ authStr ++ ";\n"
 
+/-- Render one ALTER TABLE action.
+
+    The four row-level-security arms delegate to `rlsToSql` so their rendering
+    is defined in exactly one place and the existing pins keep holding. The rest
+    are rendered here because they carry `Expr` / `ColumnDef` /
+    `TableConstraint`, whose printers live in this module.
+
+    Non-catchall on purpose: adding an `AlterTableAction` constructor breaks
+    THIS match, which is what forces the author to decide how it prints instead
+    of silently emitting nothing. -/
+def printAlterTableAction : AlterTableAction → String
+  | .enableRowLevelSecurity  => "ENABLE ROW LEVEL SECURITY"
+  | .disableRowLevelSecurity => "DISABLE ROW LEVEL SECURITY"
+  | .forceRowLevelSecurity   => "FORCE ROW LEVEL SECURITY"
+  | .noForceRowLevelSecurity => "NO FORCE ROW LEVEL SECURITY"
+  | .addColumn col ine =>
+      -- `printColumnDef` indents for CREATE TABLE's column list; ADD COLUMN is
+      -- inline, so the leading whitespace has to come back off.
+      "ADD COLUMN " ++ (if ine then "IF NOT EXISTS " else "") ++
+      (printColumnDef col).trimLeft
+  | .dropColumn name ie beh =>
+      "DROP COLUMN " ++ (if ie then "IF EXISTS " else "") ++ name ++ " " ++ beh.toSql
+  | .setNotNull col  => "ALTER COLUMN " ++ col ++ " SET NOT NULL"
+  | .dropNotNull col => "ALTER COLUMN " ++ col ++ " DROP NOT NULL"
+  | .setDefault col e =>
+      "ALTER COLUMN " ++ col ++ " SET DEFAULT " ++ printExpr e
+  | .dropDefault col => "ALTER COLUMN " ++ col ++ " DROP DEFAULT"
+  | .setColumnType col ty using_ =>
+      "ALTER COLUMN " ++ col ++ " TYPE " ++ ty.toSql ++
+      (match using_ with
+       | none => ""
+       | some e => " USING " ++ printExpr e)
+  | .addConstraint c nv =>
+      "ADD " ++ printTableConstraint c ++ (if nv then " NOT VALID" else "")
+  | .validateConstraint name => "VALIDATE CONSTRAINT " ++ name
+  | .dropConstraint name ie beh =>
+      "DROP CONSTRAINT " ++ (if ie then "IF EXISTS " else "") ++ name ++ " " ++ beh.toSql
+  | .renameColumn from_ to => "RENAME COLUMN " ++ from_ ++ " TO " ++ to
+  | .renameTable to        => "RENAME TO " ++ to.toSql
+  | .setSchema schema      => "SET SCHEMA " ++ schema
+
 /-- Render an ALTER TABLE statement. Layout:
       {banner}\n
       ALTER TABLE name ACTION;\n -/
@@ -1080,7 +1121,7 @@ def printAlterTable (a : AlterTableStmt) : String :=
     | [] => ""
     | lines => String.join (lines.map (fun l => l ++ "\n")) ++ "\n"
   bannerStr ++
-  "ALTER TABLE " ++ a.name.toSql ++ " " ++ a.action.toSql ++ ";\n"
+  "ALTER TABLE " ++ a.name.toSql ++ " " ++ printAlterTableAction a.action ++ ";\n"
 
 /-- Render a CREATE DOMAIN statement. Layout:
     {banner}\n
@@ -1171,6 +1212,43 @@ def printCreatePolicy (p : CreatePolicyStmt) : String :=
   withCheckStr ++
   ";\n"
 
+/-- Render the object name a DROP targets, plus any disambiguators Postgres
+    requires. Function argument types are part of the identity, not decoration:
+    `DROP FUNCTION f` is ambiguous where two overloads exist. -/
+def printDropTarget : DropTarget → String
+  | .table n      => n.toSql
+  | .view n       => n.toSql
+  | .index n _    => n.toSql
+  | .sequence n   => n.toSql
+  | .schema n     => n
+  | .type n       => n.toSql
+  | .domain n     => n.toSql
+  | .function n args =>
+      n.toSql ++ "(" ++ String.intercalate ", " (args.map (fun t => t.toSql)) ++ ")"
+  | .trigger n t  => n ++ " ON " ++ t.toSql
+  | .policy n t   => n ++ " ON " ++ t.toSql
+  | .extension n  => n
+
+/-- `DROP <kind> [CONCURRENTLY] [IF EXISTS] <name> <RESTRICT|CASCADE>;`
+
+    `CONCURRENTLY` sits between the keyword and the name, and only INDEX takes
+    it. It also cannot run inside a transaction block — that is a property of
+    the migration runner rather than of this rendering, and belongs to the
+    migration layer's phase model. -/
+def printDrop (d : DropStmt) : String :=
+  let bannerStr :=
+    match d.banner with
+    | [] => ""
+    | lines => String.join (lines.map (fun l => l ++ "\n")) ++ "\n"
+  let concurrently :=
+    match d.target with
+    | .index _ true => "CONCURRENTLY "
+    | _             => ""
+  bannerStr ++
+  "DROP " ++ d.target.keyword ++ " " ++ concurrently ++
+  (if d.ifExists then "IF EXISTS " else "") ++
+  printDropTarget d.target ++ " " ++ d.behavior.toSql ++ ";\n"
+
 /-- Render a top-level statement. -/
 def printStmt : Stmt → String
   | .createFunction               fn => printCreateFunction fn
@@ -1187,5 +1265,6 @@ def printStmt : Stmt → String
   | .createType                   t  => printCreateType t
   | .createPolicy                 p  => printCreatePolicy p
   | .alterTable                   a  => printAlterTable a
+  | .dropObject                   d  => printDrop d
 
 end Pg.Pretty

@@ -857,32 +857,87 @@ structure CreatePolicyStmt where
   /-- Optional banner comment lines. -/
   banner : List String := []
 
-/-- What an `ALTER TABLE` does to its target.
+/-- What a `DROP` (or a dropped sub-object) does about dependents.
 
-    Deliberately narrow: the row-level-security toggles, which are the ones a
-    schema emitter cannot currently express at all. `ADD COLUMN` / `DROP COLUMN`
-    are the obvious next arms and are omitted until something needs them —
-    a migration DSL that can drop columns is a different safety question.
+    `restrict` is the default, matching Postgres and being the safe one: it
+    REFUSES when anything still depends on the target. `cascade` drops the
+    dependents too, which is why the hazard classifier has to be able to see
+    it — a `CASCADE` can silently remove far more than the statement names. -/
+inductive DropBehavior where
+  | restrict : DropBehavior
+  | cascade  : DropBehavior
+deriving DecidableEq, Repr
 
-    ENABLE vs FORCE is the distinction that motivates this whole structure, and
-    it is not cosmetic. `ENABLE` makes policies apply to ordinary roles but
-    leaves the table OWNER exempt; `FORCE` removes that exemption. A schema with
-    ENABLE and no FORCE, read by a service that owns its tables, has policies
-    that never run — and `pg_policy` looks identical either way, so nothing
-    surfaces it. That is a property worth having a kernel able to state. -/
+def DropBehavior.toSql : DropBehavior → String
+  | .restrict => "RESTRICT"
+  | .cascade  => "CASCADE"
+
+/-- Actions on an existing table.
+
+    The four row-level-security toggles came first and are unchanged, so the
+    pins that assert their rendering still hold. The rest is what a migration
+    actually needs: adding and removing columns and constraints, and changing
+    their types and defaults.
+
+    `addConstraint`'s `notValid` is the load-bearing field in this inductive.
+    `ADD CONSTRAINT ... NOT VALID` takes a brief lock and does NOT scan the
+    table, where a plain `ADD CONSTRAINT` takes ACCESS EXCLUSIVE and scans it —
+    on a large table, the difference between a migration that is online and one
+    that is an outage. It is also what makes the correct backfill ordering
+    expressible at all: Postgres enforces a `NOT VALID` constraint on new and
+    updated rows immediately, so adding it BEFORE a backfill closes the race
+    against concurrent writers, and `validateConstraint` scans afterwards under
+    a weaker lock.
+
+    On the RLS arms: `ENABLE` vs `FORCE` is not cosmetic. `ENABLE` makes
+    policies apply to ordinary roles but leaves the table OWNER exempt; `FORCE`
+    removes that exemption. A schema with ENABLE and no FORCE, read by a service
+    that owns its tables, has policies that never run — and `pg_policy` looks
+    identical either way, so nothing surfaces it. That is a property worth
+    having a kernel able to state. -/
 inductive AlterTableAction where
+  -- Row-level security (original four, order and rendering unchanged).
   | enableRowLevelSecurity   : AlterTableAction
   | disableRowLevelSecurity  : AlterTableAction
   | forceRowLevelSecurity    : AlterTableAction
   | noForceRowLevelSecurity  : AlterTableAction
-deriving DecidableEq, Repr
+  -- Columns.
+  | addColumn      (col : ColumnDef) (ifNotExists : Bool := false) : AlterTableAction
+  | dropColumn     (name : String) (ifExists : Bool := false)
+                   (behavior : DropBehavior := .restrict) : AlterTableAction
+  | setNotNull     (col : String) : AlterTableAction
+  | dropNotNull    (col : String) : AlterTableAction
+  | setDefault     (col : String) (e : Expr) : AlterTableAction
+  | dropDefault    (col : String) : AlterTableAction
+  /-- `USING` is required whenever the old and new types are not
+      binary-coercible; Postgres rejects the statement otherwise. -/
+  | setColumnType  (col : String) (newType : PgType)
+                   (using_ : Option Expr := none) : AlterTableAction
+  -- Constraints.
+  | addConstraint      (c : TableConstraint) (notValid : Bool := false) : AlterTableAction
+  | validateConstraint (name : String) : AlterTableAction
+  | dropConstraint     (name : String) (ifExists : Bool := false)
+                       (behavior : DropBehavior := .restrict) : AlterTableAction
+  -- Renames and placement.
+  | renameColumn (from_ to : String) : AlterTableAction
+  | renameTable  (to : Identifier) : AlterTableAction
+  | setSchema    (schema : String) : AlterTableAction
 
-/-- Render one action as its SQL clause. -/
-def AlterTableAction.toSql : AlterTableAction → String
-  | .enableRowLevelSecurity  => "ENABLE ROW LEVEL SECURITY"
-  | .disableRowLevelSecurity => "DISABLE ROW LEVEL SECURITY"
-  | .forceRowLevelSecurity   => "FORCE ROW LEVEL SECURITY"
-  | .noForceRowLevelSecurity => "NO FORCE ROW LEVEL SECURITY"
+/-- Render the argument-free actions. The arms carrying an `Expr`, a
+    `ColumnDef` or a `TableConstraint` cannot be rendered here — those need the
+    expression and column printers, which live in `Pg.Pretty` and import this
+    module — so `Pg.Pretty.printAlterTableAction` handles the full set and
+    delegates here for these four.
+
+    Kept as a total function over the RLS arms rather than made partial over
+    all of them: a `String`-returning fallback would silently emit nonsense for
+    an unhandled action, and the whole point of this layer is that it cannot. -/
+def AlterTableAction.rlsToSql : AlterTableAction → Option String
+  | .enableRowLevelSecurity  => some "ENABLE ROW LEVEL SECURITY"
+  | .disableRowLevelSecurity => some "DISABLE ROW LEVEL SECURITY"
+  | .forceRowLevelSecurity   => some "FORCE ROW LEVEL SECURITY"
+  | .noForceRowLevelSecurity => some "NO FORCE ROW LEVEL SECURITY"
+  | _                        => none
 
 /-- `ALTER TABLE <name> <action>;`
 
@@ -896,6 +951,57 @@ structure AlterTableStmt where
   action : AlterTableAction
   /-- Optional banner comment lines. -/
   banner : List String := []
+
+/-! ## DROP
+
+    One `DropStmt` carrying a kind, rather than a `Stmt` constructor per object
+    type. This is what Postgres's own grammar does (`DropStmt.removeType`), and
+    it means the printer, the hazard classifier and the catalog transition each
+    get ONE arm with an inner match — while the exhaustiveness lock still bites,
+    because adding a `DropTarget` constructor breaks that inner match. -/
+
+/-- What a `DROP` names.
+
+    Function-like kinds carry their argument types because Postgres requires
+    them to disambiguate overloads: a schema with two `f`s cannot be migrated by
+    a statement that can only say `DROP FUNCTION f`. Table-scoped kinds
+    (trigger, policy) carry their table for the same reason — the name alone is
+    not unique. -/
+inductive DropTarget where
+  | table     (name : Identifier)                          : DropTarget
+  | view      (name : Identifier)                          : DropTarget
+  | index     (name : Identifier) (concurrently : Bool := false) : DropTarget
+  | sequence  (name : Identifier)                          : DropTarget
+  | schema    (name : String)                              : DropTarget
+  | type      (name : Identifier)                          : DropTarget
+  | domain    (name : Identifier)                          : DropTarget
+  | function  (name : Identifier) (argTypes : List PgType) : DropTarget
+  | trigger   (name : String) (onTable : Identifier)       : DropTarget
+  | policy    (name : String) (onTable : Identifier)       : DropTarget
+  | extension (name : String)                              : DropTarget
+deriving DecidableEq, Repr
+
+/-- The object-kind keyword. -/
+def DropTarget.keyword : DropTarget → String
+  | .table _      => "TABLE"
+  | .view _       => "VIEW"
+  | .index _ _    => "INDEX"
+  | .sequence _   => "SEQUENCE"
+  | .schema _     => "SCHEMA"
+  | .type _       => "TYPE"
+  | .domain _     => "DOMAIN"
+  | .function _ _ => "FUNCTION"
+  | .trigger _ _  => "TRIGGER"
+  | .policy _ _   => "POLICY"
+  | .extension _  => "EXTENSION"
+
+structure DropStmt where
+  target   : DropTarget
+  ifExists : Bool := false
+  /-- Defaults to `RESTRICT`, as Postgres does. A migration that wants to take
+      dependents with it has to say so, and the hazard classifier reads it. -/
+  behavior : DropBehavior := .restrict
+  banner   : List String := []
 deriving DecidableEq, Repr
 
 /-- A top-level SQL statement. Grows as the savvi-studio schema sweep
@@ -915,6 +1021,7 @@ inductive Stmt where
   | createType                   : CreateTypeStmt → Stmt
   | createPolicy                 : CreatePolicyStmt → Stmt
   | alterTable                   : AlterTableStmt → Stmt
+  | dropObject                   : DropStmt → Stmt
 
 
 end Pg.Stmt

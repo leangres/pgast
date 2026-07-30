@@ -1004,6 +1004,72 @@ structure DropStmt where
   banner   : List String := []
 deriving DecidableEq, Repr
 
+/-! ## Top-level DML
+
+    `INSERT` / `UPDATE` / `DELETE` existed only INSIDE PL/pgSQL function bodies,
+    as `BodyStmt` arms. That left the top-level forms inexpressible — and per
+    savvifi/graph's migration ownership notes, the seed and backfill half of the
+    migration corpus is exactly top-level `INSERT INTO graph.*`.
+
+    These are plain structures over the existing `Expr` / `SelectQuery` abbrevs,
+    deliberately NOT inside `Pg.Ast`'s mutual block. That is a scoping decision,
+    not an oversight: sub-links (`EXISTS (SELECT …)`, `x IN (SELECT …)`) and
+    data-modifying CTEs genuinely do need to be mutually recursive with `Expr`,
+    and growing that block is its own change. Everything here works without
+    them, so it lands without touching the block at all.
+
+    The `BodyStmt` arms are left alone for the same reason — collapsing them
+    onto these shapes is a separate, breaking step that should be taken
+    deliberately rather than smuggled in alongside new surface. -/
+
+/-- Where an INSERT's rows come from. -/
+inductive InsertSource where
+  /-- `VALUES (…), (…)` — one inner list per row. -/
+  | values (rows : List (List Expr)) : InsertSource
+  /-- `INSERT … SELECT` — the backfill shape. -/
+  | query  (q : SelectQuery) : InsertSource
+  /-- `DEFAULT VALUES`. -/
+  | defaultValues : InsertSource
+
+structure InsertStmt where
+  target  : Identifier
+  /-- Target columns. Empty means positional over every column, which is legal
+      and fragile; emitters should name them. -/
+  columns : List String := []
+  source  : InsertSource
+  /-- `ON CONFLICT DO NOTHING / DO UPDATE`, reusing the shape the PL/pgSQL arms
+      already use so the two cannot drift. -/
+  onConflict : Option ConflictAction := none
+  /-- `RETURNING` expressions; empty means no clause. -/
+  returning  : List Expr := []
+  banner  : List String := []
+
+/-- One `SET col = expr`. A list of these rather than a map: order is
+    observable in the emitted SQL, and byte-level pins depend on it. -/
+structure SetClause where
+  column : String
+  value  : Expr
+
+structure UpdateStmt where
+  target    : Identifier
+  /-- Optional alias, so `UPDATE t AS x SET … WHERE x.id = …` is expressible. -/
+  alias_    : Option String := none
+  sets      : List SetClause
+  /-- `UPDATE … FROM`, for the join-style backfill. -/
+  from_     : Option SelectSource := none
+  whereCond : Option Expr := none
+  returning : List Expr := []
+  banner    : List String := []
+
+structure DeleteStmt where
+  target    : Identifier
+  alias_    : Option String := none
+  /-- `DELETE … USING`. -/
+  using_    : Option SelectSource := none
+  whereCond : Option Expr := none
+  returning : List Expr := []
+  banner    : List String := []
+
 /-- A top-level SQL statement. Grows as the savvi-studio schema sweep
     encounters new shapes. -/
 inductive Stmt where
@@ -1022,6 +1088,9 @@ inductive Stmt where
   | createPolicy                 : CreatePolicyStmt → Stmt
   | alterTable                   : AlterTableStmt → Stmt
   | dropObject                   : DropStmt → Stmt
+  | insert                       : InsertStmt → Stmt
+  | update                       : UpdateStmt → Stmt
+  | delete                       : DeleteStmt → Stmt
 
 
 end Pg.Stmt

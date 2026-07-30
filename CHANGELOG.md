@@ -1,5 +1,34 @@
 # Changelog
 
+## 17.6.2 — top-level INSERT / UPDATE / DELETE
+
+`INSERT`/`UPDATE`/`DELETE` existed only as PL/pgSQL `BodyStmt` arms. The
+Aion-owned half of the migration corpus is exactly the top-level
+`INSERT INTO graph.*` files, so none of it could be expressed.
+
+Adds `InsertSource` (`values` / `query` / `defaultValues`), `InsertStmt`,
+`SetClause`, `UpdateStmt`, `DeleteStmt`, and the three `Stmt` arms, with printer
+arms and 8 pins. `ON CONFLICT` reuses the existing `ConflictAction` rather than
+duplicating it.
+
+**Scoping — these live outside `Pg.Ast`'s mutual block.** They are plain
+structures over the existing `Expr` / `SelectQuery` abbrevs. Sub-links
+(`EXISTS (SELECT …)`, `x IN (SELECT …)`) and data-modifying CTEs genuinely do
+need mutual recursion with `Expr`; growing that block forces decisions about
+`deriving` and `optParam` that this change does not need to make. So `withCtes`
+is **absent rather than present-and-ignored** — a field you cannot use reads as
+support that is not there.
+
+`BodyStmt` is untouched. Collapsing its duplicated qualified/unqualified pairs
+into a single `dml` arm is deferred, which is why all 137 existing printer pins
+are unmoved by this release.
+
+Two pins render with parentheses that look redundant — `WHERE (kind IS NULL)`,
+`WHERE (id = 1)` — because `isNull` and `eq` parenthesise their own operands.
+They are pinned as-emitted, from a probe of the real printer rather than from a
+prediction. Tightening the printer is a separate change that these pins would
+then catch.
+
 ## 17.6.1 — DDL that mutates: the DROP family and a real ALTER TABLE
 
 `Stmt` was 13 `CREATE`s plus an `alterTable` whose action set was four

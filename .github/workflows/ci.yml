@@ -15,7 +15,7 @@ jobs:
   # tar exits 1 reading through the bazel-out symlink farm; BSD tar warns), so a
   # darwin-green archive is not evidence for the platform consumers build on.
   build:
-    name: lean library + olean archive + 16 printer pins (linux)
+    name: lean library + olean archive + DDL pins (linux)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

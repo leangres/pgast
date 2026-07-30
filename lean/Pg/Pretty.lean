@@ -1249,6 +1249,78 @@ def printDrop (d : DropStmt) : String :=
   (if d.ifExists then "IF EXISTS " else "") ++
   printDropTarget d.target ++ " " ++ d.behavior.toSql ++ ";\n"
 
+/-- `ON CONFLICT`, shared by the top-level INSERT and factored out so it cannot
+    drift from the PL/pgSQL arms that render the same clause. -/
+def printOnConflict : Option ConflictAction → String
+  | none => ""
+  | some .doNothing => " ON CONFLICT DO NOTHING"
+  | some (.doUpdate u) =>
+      let targetStr := String.intercalate ", " u.targetCols
+      let setStr := String.intercalate ", "
+        (u.sets.map (fun (c, e) => c ++ " = " ++ printExpr e))
+      " ON CONFLICT (" ++ targetStr ++ ") DO UPDATE SET " ++
+      setStr ++ printOptWhere u.whereCond
+
+/-- `RETURNING a, b`; empty list means no clause. -/
+def printReturning (es : List Expr) : String :=
+  match es with
+  | [] => ""
+  | _  => " RETURNING " ++ String.intercalate ", " (es.map printExpr)
+
+def printBannerLines (banner : List String) : String :=
+  match banner with
+  | [] => ""
+  | lines => String.join (lines.map (fun l => l ++ "\n")) ++ "\n"
+
+/-- `INSERT INTO t (cols) VALUES (…), (…) | SELECT … | DEFAULT VALUES`. -/
+def printInsert (i : InsertStmt) : String :=
+  let colStr :=
+    match i.columns with
+    | [] => ""
+    | cs => " (" ++ String.intercalate ", " cs ++ ")"
+  let srcStr :=
+    match i.source with
+    | .values rows =>
+        " VALUES " ++ String.intercalate ", "
+          (rows.map (fun r => "(" ++ String.intercalate ", " (r.map printExpr) ++ ")"))
+    | .query q      => " " ++ printSelectQuery q
+    | .defaultValues => " DEFAULT VALUES"
+  printBannerLines i.banner ++
+  "INSERT INTO " ++ i.target.toSql ++ colStr ++ srcStr ++
+  printOnConflict i.onConflict ++ printReturning i.returning ++ ";\n"
+
+def printAlias : Option String → String
+  | none   => ""
+  | some a => " AS " ++ a
+
+/-- `UPDATE t [AS x] SET c = e, … [FROM …] [WHERE …] [RETURNING …]`. -/
+def printUpdate (u : UpdateStmt) : String :=
+  let setStr := String.intercalate ", "
+    (u.sets.map (fun sc => sc.column ++ " = " ++ printExpr sc.value))
+  let fromStr :=
+    match u.from_ with
+    | none => ""
+    | some src => printOptFrom src
+  printBannerLines u.banner ++
+  "UPDATE " ++ u.target.toSql ++ printAlias u.alias_ ++ " SET " ++ setStr ++
+  fromStr ++ printOptWhere u.whereCond ++ printReturning u.returning ++ ";\n"
+
+/-- `DELETE FROM t [AS x] [USING …] [WHERE …] [RETURNING …]`.
+
+    Note there is no guard here against a missing WHERE. An unqualified DELETE
+    is valid SQL and occasionally intended; deciding it is dangerous is the
+    hazard classifier's job, not the printer's. -/
+def printDelete (d : DeleteStmt) : String :=
+  let usingStr :=
+    match d.using_ with
+    | none => ""
+    | some src =>
+        -- `printOptFrom` renders " FROM …"; USING takes the same shape.
+        " USING" ++ (printOptFrom src).drop 5
+  printBannerLines d.banner ++
+  "DELETE FROM " ++ d.target.toSql ++ printAlias d.alias_ ++ usingStr ++
+  printOptWhere d.whereCond ++ printReturning d.returning ++ ";\n"
+
 /-- Render a top-level statement. -/
 def printStmt : Stmt → String
   | .createFunction               fn => printCreateFunction fn
@@ -1266,5 +1338,8 @@ def printStmt : Stmt → String
   | .createPolicy                 p  => printCreatePolicy p
   | .alterTable                   a  => printAlterTable a
   | .dropObject                   d  => printDrop d
+  | .insert                       i  => printInsert i
+  | .update                       u  => printUpdate u
+  | .delete                       d  => printDelete d
 
 end Pg.Pretty

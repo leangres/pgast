@@ -58,6 +58,7 @@ lean_olean_archive(
         deps = [":pgast"],
     )
     for t in [
+        "AstDmlTest.lean",
         "AstDropAlterTest.lean",
         "Pg/AstAlterTableTest.lean",
         "Pg/AstBeginExceptionTest.lean",

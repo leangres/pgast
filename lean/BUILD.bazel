@@ -1,0 +1,78 @@
+load("@rules_lean//lean:lean.bzl", "lean_library", "lean_olean_archive", "lean_test")
+
+# `Pg.Ast` / `Pg.Stmt` — the Postgres dialect layer over the generic SQL AST, plus
+# the pretty-printer whose output is gated against Postgres's own parser.
+#
+# The `Ext` seam: `Pg/Ast.lean` does
+# `abbrev Expr := Polyglot.Sql.Ast.Expr ExprExt`, contributing 22 Postgres-specific
+# expression constructors, 7 SelectSource constructors and the 29-case PL/pgSQL
+# `BodyStmt`. The generic shapes stay in @sqlast.
+#
+# This is the module edited daily, which is why the 4,686-line generated catalog
+# lives in @pgcatalog instead: rules_lean compiles a whole library in ONE action,
+# so sharing a module would recompile that dump on every edit here.
+PG_AST_CORE_SRCS = [
+    "Pg/Ty.lean",
+    "Pg/RegexAst.lean",
+    "Pg/Ast.lean",
+    "Pg/Stmt.lean",
+    "Pg/AstSmart.lean",
+    "Pg/Pretty.lean",
+    "Pg/ProceduralSurface.lean",
+]
+
+lean_library(
+    name = "pgast",
+    srcs = PG_AST_CORE_SRCS,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@pgcatalog//lean:pgcatalog",
+        "@sqlast//lean:sqlast",
+    ],
+)
+
+# One archive per (lean-version, os, arch): `.olean` is a compacted heap image, so
+# it is neither Lean-version- nor architecture-portable. Measured on a sibling
+# module, same sources and toolchain: 557,513 bytes on linux against 555,423 on
+# darwin.
+lean_olean_archive(
+    name = "pgast_oleans",
+    library = ":pgast",
+    visibility = ["//visibility:public"],
+)
+
+# Per-constructor printer pins. Each takes the COMPILED core via `deps` and lists
+# only its own file — where rules_postgres re-listed all ten core sources per
+# target. 16 targets x 11 files became 7 (once) + 16.
+#
+# These are surface locks, not theorems: they assert exact printed output, so a
+# printer change that alters bytes fails here. Combined with
+# `ProceduralSurface`'s exhaustiveness check, adding a constructor cannot ship
+# without updating both the printer and its pin.
+[
+    lean_test(
+        name = t.removesuffix(".lean").removeprefix("Pg/").lower() + "_test",
+        srcs = ["Pg/" + t.removeprefix("Pg/")],
+        entry = "Pg/" + t.removeprefix("Pg/"),
+        visibility = ["//visibility:public"],
+        deps = [":pgast"],
+    )
+    for t in [
+        "Pg/AstAlterTableTest.lean",
+        "Pg/AstBeginExceptionTest.lean",
+        "Pg/AstCaseStmtTest.lean",
+        "Pg/AstDeclareBlockTest.lean",
+        "Pg/AstDeclareLocalTest.lean",
+        "Pg/AstExecuteFormatTest.lean",
+        "Pg/AstExistsManyTest.lean",
+        "Pg/AstForRecordInLoopTest.lean",
+        "Pg/AstIfElseIfTest.lean",
+        "Pg/AstInsertDeleteTest.lean",
+        "Pg/AstPerformTest.lean",
+        "Pg/AstRaiseNoticeTest.lean",
+        "Pg/AstReturnQuerySelectTest.lean",
+        "Pg/AstSelectIntoTest.lean",
+        "Pg/AstTriggerDExtTest.lean",
+        "Pg/AstUpdateReturnExprTest.lean",
+    ]
+]

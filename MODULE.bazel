@@ -1,6 +1,6 @@
 module(
     name = "pgast",
-    version = "17.6.0",
+    version = "17.6.1",
 )
 
 # Version tracks the Postgres release modelled: `PgType` enumerates Postgres's type
